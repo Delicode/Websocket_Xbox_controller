@@ -41,9 +41,18 @@ bool disconnected = true;			//If we are disconnected from server
 int retries = 0;					//If connection to server is lost we save the number of retries, exit program after MAX_RETRIES
 bool start = false;					//Variable that is checked before we start to send data
 bool stop = false;					//Variable to stop the program
-int intensity_param = 0;				//The parameter of the motor speed, used for when the "start_motor" function is called
+bool pause = false;					//Variable to pause the data being sent / the program
+int intensity_param = 0;			//The parameter of the motor speed, used for when the "start_motor" function is called
 
-										///Time varibles///
+///Xbox Controller Variables///
+float old_val_LT = 0;
+float old_val_RT = 0;
+float old_val_LStickX = 0;
+float old_val_LStickY = 0;
+float old_val_RStickX = 0;
+float old_val_RStickY = 0;
+
+///Time varibles///
 boost::posix_time::ptime time_start;		//When to start counting towards the wait time
 boost::posix_time::ptime time_end;			//Used to compare/determine how long time has passed
 boost::posix_time::time_duration diff;		//The time difference between time_start and time_end
@@ -108,9 +117,9 @@ public:
 							if (found > 0) {
 								temp_str2 = temp_str.substr(found + 8, found2 - found - 7);
 								json json_tmp = json::parse(temp_str2);				//Parse our values to Json for easier access
-								if (json_tmp.find("intensity") != json_tmp.end()) {		//If we find the "Speed" parameter
+								if (json_tmp.find("intensity") != json_tmp.end()) {	//If we find the "Speed" parameter
 									intensity_param = json_tmp["intensity"].get<int>();		//Get the speed and save it to the intensity_param variable
-																							//std::cout << intensity_param << std::endl;		//For debugging the speed that is received
+									//std::cout << intensity_param << std::endl;			//For debugging the speed that is received
 								}
 							}
 						}
@@ -118,19 +127,22 @@ public:
 					else if (type_str == "command") {						//Check to see if we received a command message
 						if (json_msg.find("value") != json_msg.end()) {		//Find the value of the command message
 							std::string cmd_str = json_msg["value"].get<std::string>();	//Save the command
-							if (cmd_str == "rumble") {					//Check if the command was our "start_motor" command
-							//start_motor(intensity_param);					//Run the function that starts the motor at a certain speed, according to our speed parameter
+							if (cmd_str == "rumble") {						//Check if the command was our "start_motor" command
+							//rumble(intensity_param);						//Run the function that starts the rumble motor at a certain speed, according to our intensity parameter
 							}
 						}
 					}
-					else if (type_str == "stop") { 							//Stop message from the server which will be sent to the client when the server wants to stop the program
+					else if (type_str == "stop") { 							//Stop message from the server which will be sent to the client when the server wants to pause the program
+						pause = !pause;
+					}
+					else if (type_str == "quit") {							//Quit message from the server which will be sent to the client when the server wants to stop the program
 						stop = true;
 					}
 				}
 			}
 			if (json_msg.find("type") != json_msg.end()) {
 				std::string start_cmd = json_msg["type"].get<std::string>();
-				if (start_cmd == "start") { //Start message from the server which will be sent to the client when the server is ready to receive data
+				if (start_cmd == "start") {									//Start message from the server which will be sent to the client when the server is ready to receive data
 					start = true;
 				}
 			}
@@ -275,7 +287,7 @@ public:
 			retries++;		//Keep track of the number of retries
 			return;
 		}
-		retries = 0;		//If we send our heartbeat message successfully we set our nr of retries back to 0
+		retries = 0;		//If we send our message successfully we set our nr of retries back to 0
 	}
 
 	void close(int id, websocketpp::close::status::value code, std::string reason) {
@@ -436,7 +448,7 @@ int main(int argc, char *argv[]) {
 	}
 	boost::this_thread::sleep(boost::posix_time::seconds(2));	//Wait for connection
 
-																///Initial JSON message template that will be sent to the Server///
+	///Initial JSON message template that will be sent to the Server///
 	std::string device_id = "xbox_controller";
 
 	char Json[] = R"({
@@ -502,7 +514,7 @@ int main(int argc, char *argv[]) {
 				"count": 8,
 				"flags": "per_user"
 			}
-			]
+			],
 			"parameters": [ 
 			{
 				"name": "intensity",
@@ -520,27 +532,111 @@ int main(int argc, char *argv[]) {
 			}
 			]
 		}
-	}
-)";
-
-	//Add another start message, depending on if we poll or not!!
-
-	char Json2[] = R"({
-
 })";
 
-	std::string init_msg(Json);					//Create string from the above char message
-	init_msg.insert(52, device_id);				//Insert the MAC address of the device into the initial message
-												//std::cout << init_msg << std::endl;		//In case of bug in our initial message
+	//Start message that is sent if we do not want to constantly poll the controller for changes
 
-	json j_complete = json::parse(init_msg);	//Parse our message to Json
-	std::string start_message = j_complete.dump(); //Dump our Json code to a string which will be sent to the server / NI Mate
+	char Json2[] = R"({
+		"type": "device",
+		"value": {
+			"device_id": "",
+			"device_type": "controller",
+			"name": "xbox 360",
+			"values": [ {
+				"name": "controller",
+				"type": "array",
+				"datatype": "string",
+				"count": 1,
+				"ID": []
+			},
+			{
+				"name": "right stick",
+				"type": "vec",
+				"vec_dimension": 2,
+				"datatype": "int",
+				"count": 1,
+				"min": -65534,
+				"max": 65534,
+				"flags": "per_user"
+			},
+			{
+				"name": "left stick",
+				"type": "vec",
+				"vec_dimension": 2,
+				"datatype": "int",
+				"count": 1,
+				"min": -65534,
+				"max": 65534,
+				"flags": "per_user"
+			},
+			{
+				"name": "left trigger",
+				"type": "vec",
+				"datatype": "int",
+				"count": 1,
+				"min": 0,
+				"max": 255,
+				"flags": "per_user"
+			},
+			{
+				"name": "right trigger",
+				"type": "vec",
+				"datatype": "int",
+				"count": 1,
+				"min": 0,
+				"max": 255,
+				"flags": "per_user"
+			},
+			{
+				"name": "button",
+				"type": "vec",
+				"datatype": "string",
+				"count": 1,
+				"flags": "per_user"
+			}
+			],
+			"parameters": [ 
+			{
+				"name": "intensity",
+				"type": "vec",
+				"datatype": "int",
+				"default": 0,
+				"min": 0,
+				"max": 100,
+				"count": 1
+			}
+			],
+			"commands": [ {
+				"name": "rumble",
+				"datatype": "bool"
+			}
+			]
+		}
 
-	endpoint.send(id, start_message);			//Send the initial message
-
+})";
+	
+	if (poll_data == 1) {
+		std::string init_msg(Json);					//Create string from the above char message
+		//std::cout << init_msg << std::endl;		//In case of bug in our initial message
+		init_msg.insert(52, device_id);				//Insert the MAC address of the device into the initial message
+		json j_complete = json::parse(init_msg);	//Parse our message to Json
+		std::string start_message = j_complete.dump(); //Dump our Json code to a string which will be sent to the server / NI Mate
+		endpoint.send(id, start_message);			//Send the initial message
+	}
+	else {
+		std::string init_msg(Json2);					//Create string from the above char message
+		//std::cout << init_msg << std::endl;		//In case of bug in our initial message
+		init_msg.insert(52, device_id);				//Insert the MAC address of the device into the initial message
+		json j_complete = json::parse(init_msg);	//Parse our message to Json
+		std::string start_message = j_complete.dump(); //Dump our Json code to a string which will be sent to the server / NI Mate
+		endpoint.send(id, start_message);			//Send the initial message
+	}
+	/*
 	while (!start) {							//Wait for server to send start command
 		boost::this_thread::sleep(boost::posix_time::seconds(1));
 	}
+	*/
+	
 
 	while (retries < MAX_RETRIES) {										//Close after MAX_RETRIES
 		//boost::this_thread::sleep(boost::posix_time::seconds(1));			//Sleep for 1 second
@@ -564,10 +660,20 @@ int main(int argc, char *argv[]) {
 			}
 
 			if (poll_data == 1) {
+
+
+				time_start = boost::posix_time::microsec_clock::local_time();
+				time_end = boost::posix_time::microsec_clock::local_time();
+				diff = time_end - time_start;
+
+				while (diff.total_milliseconds() < WAIT_TIME) {			//Limit the data sending rate
+					boost::this_thread::sleep(boost::posix_time::milliseconds(10));	//Wait for connection
+					time_end = boost::posix_time::microsec_clock::local_time();
+					diff = time_end - time_start;
+				}
+
 				Button_array = new char[10];
 				DPad_array = new char[4];
-				Button_array = { 0 };
-				DPad_array = { 0 };
 
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_START)) Button_array[0] = '1';
 				else Button_array[0] = '0';
@@ -621,14 +727,14 @@ int main(int argc, char *argv[]) {
 				json_j["value"]["user_1"]["right stick"] = { gamepad.rightStickX, gamepad.rightStickY };
 				json_j["value"]["user_1"]["left trigger"] = gamepad.leftTrigger;
 				json_j["value"]["user_1"]["right trigger"] = gamepad.rightTrigger;
-				json_j["value"]["user_1"]["buttons"] = { Button_array[0], Button_array[1], Button_array[2], Button_array[3], Button_array[4],
-					Button_array[5] , Button_array[6] , Button_array[7] , Button_array[8], Button_array[9] };
+				json_j["value"]["user_1"]["buttons"] = { Button_array[0] - '0', Button_array[1] - '0', Button_array[2] - '0', Button_array[3] - '0',
+					Button_array[4] - '0', Button_array[5] - '0', Button_array[6] - '0', Button_array[7] - '0', Button_array[8] - '0', Button_array[9] - '0'};
 				json_j["value"]["user_1"]["dpad"] = { DPad_array[0], DPad_array[1], DPad_array[2], DPad_array[3] };
 
 				message = json_j.dump();											//Dump the Json message to a string so it can be sent
 				endpoint.send(id, message);											//Send the message / data to the server
-																					//std::cout << message << std::endl;								//In case we need to debug the message that is sent
-																					///Cleanup before next iteration, avoid memory leaks///
+				std::cout << message << std::endl;									//In case we need to debug the message that is sent
+				///Cleanup before next iteration, avoid memory leaks///
 				message.clear();
 				json_j.clear();
 
@@ -638,26 +744,59 @@ int main(int argc, char *argv[]) {
 			else if (poll_data == 0) {
 				json json_j;
 				std::string message;
+				bool state_changed = false;
 
+				boost::this_thread::sleep(boost::posix_time::milliseconds(500));	//Wait for connection
 				json_j["type"] = "data";
 				json_j["value"]["device_id"] = device_id;
 				json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-				if (gamepad.IsPressed(XINPUT_GAMEPAD_START)) json_j["value"]["user_1"]["button"] = { '1', '0', '0' ,'0' ,'0' ,'0' ,'0' ,'0' ,'0', '0' };
-				else if (gamepad.IsPressed(XINPUT_GAMEPAD_BACK)) json_j["value"]["user_1"]["button"] = { '0', '1', '0' ,'0' ,'0' ,'0' ,'0' ,'0' ,'0', '0' };
-				else if (gamepad.IsPressed(XINPUT_GAMEPAD_LEFT_THUMB)) json_j["value"]["user_1"]["button"] = { '0', '0', '1' ,'0' ,'0' ,'0' ,'0' ,'0' ,'0', '0' };
-				else if (gamepad.IsPressed(XINPUT_GAMEPAD_RIGHT_THUMB)) json_j["value"]["user_1"]["button"] = { '0', '0', '0' ,'1' ,'0' ,'0' ,'0' ,'0' ,'0', '0' };
-				else if (gamepad.IsPressed(XINPUT_GAMEPAD_LEFT_SHOULDER)) json_j["value"]["user_1"]["button"] = { '0', '0', '0' ,'0' ,'1' ,'0' ,'0' ,'0' ,'0', '0' };
-				else if (gamepad.IsPressed(XINPUT_GAMEPAD_RIGHT_SHOULDER)) json_j["value"]["user_1"]["button"] = { '0', '0', '0' ,'0' ,'0' ,'1' ,'0' ,'0' ,'0', '0' };
-				json_j["value"]["user_1"]["left stick"] = { gamepad.leftStickX, gamepad.leftStickY };
-				json_j["value"]["user_1"]["right stick"] = { gamepad.rightStickX, gamepad.rightStickY };
-				json_j["value"]["user_1"]["left trigger"] = gamepad.leftTrigger;
-				json_j["value"]["user_1"]["right trigger"] = gamepad.rightTrigger;
-				
-				json_j["value"]["user_1"]["dpad"] = { DPad_array[0], DPad_array[1], DPad_array[2], DPad_array[3] };
 
-				message = json_j.dump();											//Dump the Json message to a string so it can be sent
-				endpoint.send(id, message);											//Send the message / data to the server
-																					//std::cout << message << std::endl;								//In case we need to debug the message that is sent
+				if (gamepad.IsPressed(XINPUT_GAMEPAD_START)) json_j["value"]["user_1"]["button"] = "start", state_changed = true;
+				else if (gamepad.IsPressed(XINPUT_GAMEPAD_BACK)) json_j["value"]["user_1"]["button"] = "back", state_changed = true;
+				else if (gamepad.IsPressed(XINPUT_GAMEPAD_LEFT_THUMB)) json_j["value"]["user_1"]["button"] = "ls", state_changed = true;
+				else if (gamepad.IsPressed(XINPUT_GAMEPAD_RIGHT_THUMB)) json_j["value"]["user_1"]["button"] = "rs", state_changed = true;
+				else if (gamepad.IsPressed(XINPUT_GAMEPAD_LEFT_SHOULDER)) json_j["value"]["user_1"]["button"] = "lb", state_changed = true;
+				else if (gamepad.IsPressed(XINPUT_GAMEPAD_RIGHT_SHOULDER)) json_j["value"]["user_1"]["button"] = "rb", state_changed = true;
+				else if (gamepad.IsPressed(XINPUT_GAMEPAD_A)) json_j["value"]["user_1"]["button"] = "a", state_changed = true;
+				else if (gamepad.IsPressed(XINPUT_GAMEPAD_B)) json_j["value"]["user_1"]["button"] = "b", state_changed = true;
+				else if (gamepad.IsPressed(XINPUT_GAMEPAD_X)) json_j["value"]["user_1"]["button"] = "x", state_changed = true;
+				else if (gamepad.IsPressed(XINPUT_GAMEPAD_Y)) json_j["value"]["user_1"]["button"] = "y", state_changed = true;
+				else if (gamepad.IsPressed(XINPUT_GAMEPAD_DPAD_UP)) json_j["value"]["user_1"]["dpad"] = "up", state_changed = true;
+				else if (gamepad.IsPressed(XINPUT_GAMEPAD_DPAD_DOWN)) json_j["value"]["user_1"]["dpad"] = "down", state_changed = true;
+				else if (gamepad.IsPressed(XINPUT_GAMEPAD_DPAD_LEFT)) json_j["value"]["user_1"]["dpad"] = "left", state_changed = true;
+				else if (gamepad.IsPressed(XINPUT_GAMEPAD_DPAD_RIGHT)) json_j["value"]["user_1"]["dpad"] = "right", state_changed = true;
+
+
+				else if ( (gamepad.leftStickX != old_val_LStickX) || (gamepad.leftStickY != old_val_LStickY) ) {
+					old_val_LStickX = gamepad.leftStickX, old_val_LStickY = gamepad.leftStickY;
+					json_j["value"]["user_1"]["left stick"] = { gamepad.leftStickX, gamepad.leftStickY };
+					state_changed = true;
+				}
+
+				else if ( (gamepad.rightStickX != old_val_RStickX) || (gamepad.rightStickY != old_val_RStickY) ) {
+					old_val_RStickX = gamepad.rightStickX, old_val_RStickY = gamepad.rightStickY;
+					json_j["value"]["user_1"]["left stick"] = { gamepad.rightStickX, gamepad.rightStickY };
+					state_changed = true;
+				}
+
+				else if (gamepad.leftTrigger != old_val_LT) {
+					old_val_LT = gamepad.leftTrigger;
+					json_j["value"]["user_1"]["left trigger"] = gamepad.leftTrigger;
+					state_changed = true;
+				}
+
+				else if (gamepad.rightTrigger != old_val_RT) {
+					old_val_LT = gamepad.rightTrigger;
+					json_j["value"]["user_1"]["right trigger"] = gamepad.rightTrigger;
+					state_changed = true;
+				}
+
+				if (state_changed) {
+					message = json_j.dump();								//Dump the Json message to a string so it can be sent
+					std::cout << message << std::endl;						//Print out message, for debugging
+					endpoint.send(id, message);								//Send the message / data to the server
+				}
+				
 				///Cleanup before next iteration, avoid memory leaks///
 				message.clear();
 				json_j.clear();
