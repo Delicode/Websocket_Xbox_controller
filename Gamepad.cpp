@@ -13,7 +13,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <Xinput.h>
-#pragma comment(lib, "XInput.lib") // Library containing necessary 360
+#pragma comment(lib, "XInput.lib")
 
 ///Websocket++ Header files///
 #include <websocketpp/config/asio_no_tls_client.hpp>
@@ -43,10 +43,11 @@ bool start = false;					//Variable that is checked before we start to send data
 bool stop = false;					//Variable to stop the program
 bool pause = false;					//Variable to pause the data being sent / the program
 int intensity_param = 0;			//The parameter of the motor speed, used for when the "start_motor" function is called
+std::string start_message;
 
 ///Xbox Controller Variables///
-float old_val_LT = 0;
-float old_val_RT = 0;
+float old_val_LT = 0;				//Old value of left trigger
+float old_val_RT = 0;				//Old value of right trigger
 float old_val_LStickX = 0;
 float old_val_LStickY = 0;
 float old_val_RStickX = 0;
@@ -355,6 +356,7 @@ public:
 	bool CheckConnection();
 	bool Refresh();
 	bool IsPressed(WORD);
+	XINPUT_GAMEPAD *SetState(int intensity);
 };
 
 int Gamepad::GetPort() {
@@ -424,6 +426,17 @@ bool Gamepad::Refresh() {
 bool Gamepad::IsPressed(WORD button) {
 	return (state.Gamepad.wButtons & button) != 0;
 }
+
+XINPUT_GAMEPAD * Gamepad::SetState(int intensity)
+{
+	XINPUT_VIBRATION vibration;
+	ZeroMemory(&vibration, sizeof(XINPUT_VIBRATION));
+	vibration.wLeftMotorSpeed = intensity; // use any value between 0-65535 here
+	vibration.wRightMotorSpeed = intensity; // use any value between 0-65535 here
+	XInputSetState(cId, &vibration);
+	return &state.Gamepad;
+}
+
 
 
 int main(int argc, char *argv[]) {
@@ -626,7 +639,7 @@ int main(int argc, char *argv[]) {
 		if (debug_send) std::cout << init_msg << std::endl;		//In case of bug in our initial message
 		init_msg.insert(52, device_id);				//Insert the MAC address of the device into the initial message
 		json j_complete = json::parse(init_msg);	//Parse our message to Json
-		std::string start_message = j_complete.dump(); //Dump our Json code to a string which will be sent to the server / NI Mate
+		start_message = j_complete.dump(); //Dump our Json code to a string which will be sent to the server / NI Mate
 		endpoint.send(id, start_message);			//Send the initial message
 	}
 	else {
@@ -634,7 +647,7 @@ int main(int argc, char *argv[]) {
 		if (debug_send) std::cout << init_msg << std::endl;		//In case of bug in our initial message
 		init_msg.insert(52, device_id);				//Insert the MAC address of the device into the initial message
 		json j_complete = json::parse(init_msg);	//Parse our message to Json
-		std::string start_message = j_complete.dump(); //Dump our Json code to a string which will be sent to the server / NI Mate
+		start_message = j_complete.dump(); //Dump our Json code to a string which will be sent to the server / NI Mate
 		endpoint.send(id, start_message);			//Send the initial message
 	}
 	/*
@@ -654,7 +667,6 @@ int main(int argc, char *argv[]) {
 		if (!gamepad.Refresh()) {
 			if (wasConnected) {
 				wasConnected = false;
-
 				std::cout << "Please connect an Xbox 360 controller." << std::endl;
 			}
 		}
@@ -853,7 +865,7 @@ int main(int argc, char *argv[]) {
 					}
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_RIGHT_THUMB)) {
-					if (button_hold[3] = 0) {
+					if (button_hold[3] == 0) {
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
@@ -886,8 +898,8 @@ int main(int argc, char *argv[]) {
 						button_hold[3] = 0;
 					}
 				}
-				if (gamepad.IsPressed(XINPUT_GAMEPAD_LEFT_SHOULDER)) {
-					if (button_hold[4] = 0) {
+				if ( gamepad.IsPressed(XINPUT_GAMEPAD_LEFT_SHOULDER) ) {
+					if (button_hold[4] == 0) {
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
@@ -921,7 +933,7 @@ int main(int argc, char *argv[]) {
 					}
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_RIGHT_SHOULDER)) {
-					if (button_hold[5] = 0) {
+					if (button_hold[5] == 0) {
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
@@ -955,7 +967,7 @@ int main(int argc, char *argv[]) {
 					}
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_A)) {
-					if (button_hold[6] = 0) {
+					if (button_hold[6] == 0) {
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
@@ -989,7 +1001,7 @@ int main(int argc, char *argv[]) {
 					}
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_B)) {
-					if (button_hold[7] = 0) {
+					if (button_hold[7] == 0) {
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
@@ -1023,7 +1035,7 @@ int main(int argc, char *argv[]) {
 					}
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_X)) {
-					if (button_hold[8] = 0) {
+					if (button_hold[8] == 0) {
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
@@ -1057,7 +1069,7 @@ int main(int argc, char *argv[]) {
 					}
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_Y)) {
-					if (button_hold[9] = 0) {
+					if (button_hold[9] == 0) {
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
@@ -1091,7 +1103,7 @@ int main(int argc, char *argv[]) {
 					}
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_DPAD_UP)) {
-					if (dpad_hold[0] = 0) {
+					if (dpad_hold[0] == 0) {
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
@@ -1125,7 +1137,7 @@ int main(int argc, char *argv[]) {
 					}
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_DPAD_DOWN)) {
-					if (dpad_hold[1] = 0) {
+					if (dpad_hold[1] == 0) {
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
@@ -1159,7 +1171,7 @@ int main(int argc, char *argv[]) {
 					}
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_DPAD_LEFT)) {
-					if (dpad_hold[2] = 0) {
+					if (dpad_hold[2] == 0) {
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
@@ -1193,7 +1205,7 @@ int main(int argc, char *argv[]) {
 					}
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_DPAD_RIGHT)) {
-					if (dpad_hold[3] = 0) {
+					if (dpad_hold[3] == 0) {
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
@@ -1280,7 +1292,7 @@ int main(int argc, char *argv[]) {
 					json_j["value"]["timestamp_ms"] = (time(0) * 1000);
 					json_j["value"]["user_1"]["right trigger"] = gamepad.rightTrigger;
 					message = json_j.dump();								//Dump the Json message to a string so it can be sent
-					if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
+					if (debug_send) std::cout << message << std::endl;		//Print out message, for debugging
 					endpoint.send(id, message);								//Send the message / data to the server
 					message.clear();
 					json_j.clear();
@@ -1288,13 +1300,13 @@ int main(int argc, char *argv[]) {
 				}				
 			}
 		}
-
-		if (retries > 0) {													//Heartbeat message didn't go through if retries is > 0
+		while ((retries > 0) && (retries < MAX_RETRIES)) {					//A message didn't go through if retries is > 0
 			int close_code = websocketpp::close::status::service_restart;	//Reason why we are closing connection
 			std::string reason = "Trying to re-connect";
 			endpoint.close(id, close_code, reason);							//This will fail if server was closed, might be useless
 			id = endpoint.connect(ip_address);								//Try to reconnect to the server, id will be old id + 1
 			boost::this_thread::sleep(boost::posix_time::seconds(2)); 		//Have to wait a couple of seconds to reconnect
+			endpoint.send(id, start_message);
 		}
 
 		if (stop) {															//If we receive a stop command from the sever / NI Mate
