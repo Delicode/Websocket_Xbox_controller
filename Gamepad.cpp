@@ -1,3 +1,18 @@
+/*
+* Program to use with the Xbox Controller
+
+* The program works in the following way:
+- Asks for the IP address and port to NI Mate / websocket server
+- Connects to NI Mate / the server
+- Waits to receive the start message that NI Mate sends when it starts to use a new device
+- According to the poll parameter, the program either starts to send data continuously or then just when a button is pressed / joystick is moved
+- If the program receives a stop message it will pause the sending of data and if it receives a quit message it will quit the program
+
+* Things to note:
+- Currently only one controller is supported, might add multiple controller support later
+- The program starts with the polling set to false so it only sends a message if a button is pressed
+*/
+
 ///General Header files///
 #include <iostream>
 #include <cstdio>
@@ -42,18 +57,37 @@ int retries = 0;					//If connection to server is lost we save the number of ret
 bool start = false;					//Variable that is checked before we start to send data
 bool stop = false;					//Variable to stop the program
 bool pause = false;					//Variable to pause the data being sent / the program
-int intensity_param = 0;			//The parameter of the motor speed, used for when the "start_motor" function is called
-std::string start_message;
+
+///Parameter Variables///
+int intensity_param = 0;			//The value of the vibration speed, used for the different rumble fuctions
+int duration_param = 0;				//The duration of the rumble in the function rumble_timed()
+int pattern_param = 0;				//The vibration pattern that we want or the number of vibrations
+bool poll_param = false;
+
+///Function declarations///
+void rumble();						//Function that starts or stops the rumble motors			
+void rumble_timed();				//Function that starts the rumble motors and keep them on for at set time
+void rumble_pattern();				//Function that vibrates the controller a nr of times (pattern_param)
 
 ///Xbox Controller Variables///
-float old_val_LT = 0;				//Old value of left trigger
-float old_val_RT = 0;				//Old value of right trigger
-float old_val_LStickX = 0;
-float old_val_LStickY = 0;
-float old_val_RStickX = 0;
-float old_val_RStickY = 0;
-int button_hold[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-int dpad_hold[4] = {0 ,0 , 0, 0};
+float old_val_LT = 0;				//Old value of left trigger for checking if the state has changed
+float old_val_RT = 0;				//Old value of right trigger for checking if the state has changed
+float old_val_LStickX = 0;			//Old value of Left stick X axis for checking if the state has changed
+float old_val_LStickY = 0;			//Old value of Left stick Y axis for checking if the state has changed
+float old_val_RStickX = 0;			//Old value of right stick X axis for checking if the state has changed
+float old_val_RStickY = 0;			//Old value of right stick Y axis for checking if the state has changed
+int button_array_nopoll[10] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 , 0}; //Array for buttons
+int dpad_array_nopoll[4] = { 0, 0, 0, 0 };				//Array for Dpad
+int button_hold[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};	//Array for keeping track of which buttons are being held down
+int dpad_hold[4] = {0 ,0 , 0, 0};						//Array for keeping track of which dpad buttons are being held down
+
+int rumble_intensity_division[101] = { 0, 655, 1310, 1966, 2621, 3276, 3932, 4587, 5242, 5898, 6553, 7208,
+7864, 8519, 9174, 9830, 10485, 11140, 11796, 12451, 13107, 13762, 14417, 15073, 15728, 16383, 17039, 17694,
+18349, 19005, 19660, 20315, 20971, 21626, 22281, 22937, 23592, 24247, 24903, 25558, 26214, 26869, 27524, 28180,
+28835, 29490, 30146, 30801, 31456, 32112, 32767, 33422, 34078, 34733, 35388, 36044, 36699, 37354, 38010, 38665, 39321,
+39976, 40631, 41287, 41942, 42597, 43253, 43908, 44563, 45219, 45874, 46529, 47185, 47840, 48495, 49151, 49806, 50461,
+51117, 51772, 52428, 53083, 53738, 54394, 55049, 55704, 56360, 57015, 57670, 58326, 58981, 59636, 60292, 60947, 61602,
+62258, 62913, 63568, 64224, 64879, 65535 };
 
 ///Time varibles///
 boost::posix_time::ptime time_start;		//When to start counting towards the wait time
@@ -61,8 +95,10 @@ boost::posix_time::ptime time_end;			//Used to compare/determine how long time h
 boost::posix_time::time_duration diff;		//The time difference between time_start and time_end
 
 ///Debug///
-bool debug_send = true;
-bool debug_receive = false;
+bool debug_send = true;						//Set true to print out everything that is being sent to NI Mate / Websocket server
+bool debug_receive = false;					//Set true to print out everything being received from NI Mate / Websocket server
+
+///Classses for the websocket client part of the program///
 
 class connection_metadata {
 
@@ -102,15 +138,16 @@ public:
 		m_error_reason = s.str();
 	}
 
+	///When we receive a message it will come here, >message handler///
 	void on_message(websocketpp::connection_hdl, client::message_ptr msg) {
-		if (debug_receive) std::cout << msg->get_payload().c_str() << std::endl;						//In case we need to debug the messages we receive
+		if (debug_receive) std::cout << msg->get_payload().c_str() << std::endl;	//In case we need to debug the messages we receive
 		if (msg->get_opcode() == websocketpp::frame::opcode::text) {
 
 			std::string incoming_msg = msg->get_payload(); 							//Convert to string
 			json json_msg = json::parse(incoming_msg);								//Parse to Json
 
 			//Check which function is sent in the Json message
-			//Extract what is needed, the speed of the controller
+			//Extract what is needed, the duration, the pattern and the intensity
 			//Run the function
 			if (start) {
 				if (json_msg.find("type") != json_msg.end()) {						//Check Json message if it contains the type of message received
@@ -124,18 +161,36 @@ public:
 							if (found > 0) {
 								temp_str2 = temp_str.substr(found + 8, found2 - found - 7);
 								json json_tmp = json::parse(temp_str2);				//Parse our values to Json for easier access
-								if (json_tmp.find("intensity") != json_tmp.end()) {	//If we find the "Speed" parameter
-									intensity_param = json_tmp["intensity"].get<int>();		//Get the speed and save it to the intensity_param variable
-									if (debug_receive) std::cout << intensity_param << std::endl;			//For debugging the speed that is received
+								if (json_tmp.find("intensity") != json_tmp.end()) {	//If we find the "intensity" parameter
+									intensity_param = json_tmp["intensity"].get<int>();		//Get the intensity and save it to the intensity_param variable
+									if (debug_receive) std::cout << intensity_param << std::endl;	//For debugging the intensity that is received
+								}
+								if (json_tmp.find("pattern") != json_tmp.end()) {
+									pattern_param = json_tmp["pattern"].get<int>();					//Get the pattern of the rumble and set our pattern parameter
+									if (debug_receive) std::cout << pattern_param << std::endl;		//For debugging the pattern that is received
+								}
+								if (json_tmp.find("duration") != json_tmp.end()) {
+									duration_param = json_tmp["duration"].get<int>();				//Get the duration of the rumble and set our duration parameter
+									if (debug_receive) std::cout << duration_param << std::endl;	//For debugging the duration that is received
+								}
+								if (json_tmp.find("poll") != json_tmp.end()) {
+									poll_param = json_tmp["poll"].get<bool>();						//Get the duration of the rumble and set our duration parameter
+									if (debug_receive) std::cout << duration_param << std::endl;	//For debugging the duration that is received
 								}
 							}
 						}
 					}
-					else if (type_str == "command") {						//Check to see if we received a command message
-						if (json_msg.find("value") != json_msg.end()) {		//Find the value of the command message
-							std::string cmd_str = json_msg["value"].get<std::string>();	//Save the command
-							if (cmd_str == "rumble") {						//Check if the command was our "start_motor" command
-							//rumble(intensity_param);						//Run the function that starts the rumble motor at a certain speed, according to our intensity parameter
+					else if (type_str == "command") {												//Check to see if we received a command message
+						if (json_msg.find("value") != json_msg.end()) {								//Check that there is a value in our command message
+							std::string cmd_val = json_msg["value"].get<std::string>();				//Save the command that we have received
+							if (cmd_val == "rumble") {												//Rumble command is found, start to rumble the controller
+								boost::thread t1(&rumble);											//Start the rumble in new thread so that data is still being sent even though the controller is rumbling
+							}
+							else if (cmd_val == "rumble_pattern") {									//Rumble pattern is chosen, the chosen rumble pattern in the rumble pattern parameter will be run
+								boost::thread t2(&rumble_pattern);									//Start the rumble in new thread so that data is still being sent even though the controller is rumbling
+							}
+							else if (cmd_val == "rumble_timed") {									//Rumble timed command is found, rumble the motor for at cetain duration
+								boost::thread t3(&rumble_timed);									//Start the rumble in new thread so that data is still being sent even though the controller is rumbling
 							}
 						}
 					}
@@ -332,6 +387,8 @@ private:
 	int m_next_id;
 };
 
+///Gamepad class//
+
 class Gamepad {
 private:
 	int cId;
@@ -341,7 +398,7 @@ private:
 	float deadzoneY;
 
 public:
-	Gamepad() : deadzoneX(0.05f), deadzoneY(0.02f) {}
+	Gamepad() : deadzoneX(0.05f), deadzoneY(0.05f) {}
 	Gamepad(float dzX, float dzY) : deadzoneX(dzX), deadzoneY(dzY) {}
 
 	float leftStickX;
@@ -427,48 +484,67 @@ bool Gamepad::IsPressed(WORD button) {
 	return (state.Gamepad.wButtons & button) != 0;
 }
 
-XINPUT_GAMEPAD * Gamepad::SetState(int intensity)
-{
+XINPUT_GAMEPAD * Gamepad::SetState(int intensity) { //Funtion that vibrates the controller, input is 0-65535
+
 	XINPUT_VIBRATION vibration;
 	ZeroMemory(&vibration, sizeof(XINPUT_VIBRATION));
-	vibration.wLeftMotorSpeed = intensity; // use any value between 0-65535 here
-	vibration.wRightMotorSpeed = intensity; // use any value between 0-65535 here
+	vibration.wLeftMotorSpeed = intensity;
+	vibration.wRightMotorSpeed = intensity;
 	XInputSetState(cId, &vibration);
 	return &state.Gamepad;
 }
 
+///Controller Setup///
+Gamepad gamepad;        //Initiate the controller here
 
+void rumble() {			//Function that turns on the rumble motor
+	gamepad.SetState( rumble_intensity_division[intensity_param] );
+}
+
+void rumble_timed() {	//Function that turns on the motor for a set duration
+	gamepad.SetState( rumble_intensity_division[intensity_param] );
+	boost::this_thread::sleep(boost::posix_time::seconds(duration_param));
+	gamepad.SetState(0);
+	return;
+}
+
+void rumble_pattern() {	//Function that rumbles the controller according to a set pattern
+	if (pattern_param == 1) {
+		gamepad.SetState( rumble_intensity_division[intensity_param] );
+		boost::this_thread::sleep(boost::posix_time::milliseconds(500));	//Let controller rumble for time
+		gamepad.SetState(0);												//Turn rumble off
+		return;
+	}
+	else if (pattern_param > 1) {
+		for (int y = 0; y < pattern_param; y++) {
+			boost::this_thread::sleep(boost::posix_time::milliseconds(500));
+			gamepad.SetState( rumble_intensity_division[intensity_param] );	//Set the controller rumble 
+			boost::this_thread::sleep(boost::posix_time::milliseconds(500));//Let controller rumble for 500 ms
+			gamepad.SetState(0);											//Turn rumble off
+		}
+		return;
+	}
+}
 
 int main(int argc, char *argv[]) {
 
-	///Controller Setup///
-	Gamepad gamepad;
+	std::string start_message;		//Initiate start message here so it can be used when we want to reconnect
 	bool wasConnected = true;
-
-	int poll_data = -1;
-	char answer;
-	while (poll_data < 0) {												//Loop untill we get a valid ip address and port number
-		std::cout << "Do you want to poll the controller continuously or just when buttons are pressed? 'y' to poll and 'n' not to poll" << std::endl;
-		std::cin >> answer;
-		if (answer == 'y') poll_data = 1;
-		else if (answer == 'n') poll_data = 0;
-		else std::cout << "Invalid entry" << std::endl;
-	}
 
 	///Websocket++ Setup///
 	std::string ip_address;
 	int id = -1;
 	websocket_endpoint endpoint;
 
-	while (id < 0) {												//Loop untill we get a valid ip address and port number
+	while (id < 0) {				//Loop untill we get a valid ip address and port number
 		std::cout << "Enter IP address and port, example: ws://192.168.1.1:7651 \n";
 		std::cin >> ip_address;
 		id = endpoint.connect(ip_address);
 	}
-	boost::this_thread::sleep(boost::posix_time::seconds(2));	//Wait for connection
+	boost::this_thread::sleep(boost::posix_time::seconds(2));	//Wait for the connection to establish
 
 	///Initial JSON message template that will be sent to the Server///
-	std::string device_id = "xbox_controller";
+	std::string device_id = "xbox_controller"; //Can be changed if necessary
 
 	char Json[] = R"({
 		"type": "device",
@@ -477,46 +553,41 @@ int main(int argc, char *argv[]) {
 			"device_type": "controller",
 			"name": "xbox 360",
 			"values": [ {
-				"name": "controller",
-				"type": "array",
-				"datatype": "string",
-				"count": 1,
-				"ID": []
-			},
-			{
 				"name": "right stick",
 				"type": "vec",
-				"datatype": "int",
+				"vec_dimension": 2,
+				"datatype": "float",
 				"count": 1,
-				"min": 0,
-				"max": 255,
+				"min": -1,
+				"max": 1,
 				"flags": "per_user"
 			},
 			{
 				"name": "left stick",
 				"type": "vec",
-				"datatype": "int",
+				"vec_dimension": 2,
+				"datatype": "float",
 				"count": 1,
-				"min": 0,
-				"max": 255,
+				"min": -1,
+				"max": 1,
 				"flags": "per_user"
 			},
 			{
 				"name": "left trigger",
 				"type": "vec",
-				"datatype": "int",
+				"datatype": "float",
 				"count": 1,
 				"min": 0,
-				"max": 255,
+				"max": 1,
 				"flags": "per_user"
 			},
 			{
 				"name": "right trigger",
 				"type": "vec",
-				"datatype": "int",
+				"datatype": "float",
 				"count": 1,
 				"min": 0,
-				"max": 255,
+				"max": 1,
 				"flags": "per_user"
 			},
 			{
@@ -530,7 +601,7 @@ int main(int argc, char *argv[]) {
 				"name": "dpad",
 				"type": "vec",
 				"datatype": "int",
-				"count": 8,
+				"count": 4,
 				"flags": "per_user"
 			}
 			],
@@ -543,155 +614,98 @@ int main(int argc, char *argv[]) {
 				"min": 0,
 				"max": 100,
 				"count": 1
-			}
-			],
-			"commands": [ {
-				"name": "rumble",
-				"datatype": "bool"
-			}
-			]
-		}
-})";
-
-	//Start message that is sent if we do not want to constantly poll the controller for changes
-
-	char Json2[] = R"({
-		"type": "device",
-		"value": {
-			"device_id": "",
-			"device_type": "controller",
-			"name": "xbox 360",
-			"values": [ {
-				"name": "controller",
-				"type": "array",
-				"datatype": "string",
-				"count": 1,
-				"ID": []
 			},
 			{
-				"name": "right stick",
+				"name": "poll",
 				"type": "vec",
-				"vec_dimension": 2,
-				"datatype": "int",
-				"count": 1,
-				"min": -1,
-				"max": 1,
-				"flags": "per_user"
+				"datatype": "bool",
+				"default": 0,
+				"count": 1
 			},
 			{
-				"name": "left stick",
-				"type": "vec",
-				"vec_dimension": 2,
-				"datatype": "int",
-				"count": 1,
-				"min": -1,
-				"max": 1,
-				"flags": "per_user"
-			},
-			{
-				"name": "left trigger",
-				"type": "vec",
-				"datatype": "int",
-				"count": 1,
-				"min": 0,
-				"max": 1,
-				"flags": "per_user"
-			},
-			{
-				"name": "right trigger",
-				"type": "vec",
-				"datatype": "int",
-				"count": 1,
-				"min": 0,
-				"max": 1,
-				"flags": "per_user"
-			},
-			{
-				"name": "button",
-				"type": "vec",
-				"datatype": "string",
-				"count": 1,
-				"flags": "per_user"
-			}
-			],
-			"parameters": [ 
-			{
-				"name": "intensity",
+				"name": "duration",
 				"type": "vec",
 				"datatype": "int",
 				"default": 0,
 				"min": 0,
-				"max": 100,
+				"max": 20,
+				"count": 1
+			},
+			{
+				"name": "pattern",
+				"type": "vec",
+				"datatype": "int",
+				"default": 0,
+				"min": 0,
+				"max": 20,
 				"count": 1
 			}
 			],
 			"commands": [ {
 				"name": "rumble",
 				"datatype": "bool"
+			},
+			{
+				"name": "rumble_timed",
+				"datatype": "bool"
+			},
+			{
+				"name": "rumble_pattern",
+				"datatype": "bool"
 			}
 			]
 		}
-
 })";
+
+	std::string init_msg(Json);								//Create string from the above char message
+	if (debug_send) std::cout << init_msg << std::endl;		//In case of bug in our initial message
+	init_msg.insert(52, device_id);							//Insert the device id of the device into the initial message
+	json j_complete = json::parse(init_msg);				//Parse our message to Json
+	start_message = j_complete.dump();						//Dump our Json code to a string which will be sent to the server / NI Mate
+	endpoint.send(id, start_message);						//Send the initial message	
 	
-	if (poll_data == 1) {
-		std::string init_msg(Json);					//Create string from the above char message
-		if (debug_send) std::cout << init_msg << std::endl;		//In case of bug in our initial message
-		init_msg.insert(52, device_id);				//Insert the MAC address of the device into the initial message
-		json j_complete = json::parse(init_msg);	//Parse our message to Json
-		start_message = j_complete.dump(); //Dump our Json code to a string which will be sent to the server / NI Mate
-		endpoint.send(id, start_message);			//Send the initial message
-	}
-	else {
-		std::string init_msg(Json2);					//Create string from the above char message
-		if (debug_send) std::cout << init_msg << std::endl;		//In case of bug in our initial message
-		init_msg.insert(52, device_id);				//Insert the MAC address of the device into the initial message
-		json j_complete = json::parse(init_msg);	//Parse our message to Json
-		start_message = j_complete.dump(); //Dump our Json code to a string which will be sent to the server / NI Mate
-		endpoint.send(id, start_message);			//Send the initial message
-	}
-	/*
-	while (!start) {							//Wait for server to send start command
+	/*while (!start) {											//Wait for server to send start command
 		boost::this_thread::sleep(boost::posix_time::seconds(1));
-	}
-	*/
+	}*/
+	
 	
 
-	while (retries < MAX_RETRIES) {										//Close after MAX_RETRIES
-		//boost::this_thread::sleep(boost::posix_time::seconds(1));			//Sleep for 1 second
+	while (retries < MAX_RETRIES) {								//Close after MAX_RETRIES, if server disconnects
 
-		unsigned int *Button_Data;				//Variable for the button value
-		char *Button_array;						//Array of buttons
-		char *DPad_array;						//Array of dpad
-
-		if (!gamepad.Refresh()) {
-			if (wasConnected) {
+		if (!gamepad.Refresh()) {								//If we are unable to refresh the controller
+			if (wasConnected) {									//Check if we were connected to a controller
 				wasConnected = false;
 				std::cout << "Please connect an Xbox 360 controller." << std::endl;
 			}
 		}
 
 		else {
-			if (!wasConnected) {
+			if (!wasConnected) {								//We are connected to a controller
 				wasConnected = true;
 				std::cout << "Controller connected on port " << gamepad.GetPort() << std::endl;
 			}
 
-			if (poll_data == 1) {
+			if (poll_param) {
 
+				char *Button_array;								//Array	 buttons, 1 if being pressed, 0 if not pressed
+				char *DPad_array;								//Array of dpad buttons, 1 if being pressed, 0 if not pressed
 
-				time_start = boost::posix_time::microsec_clock::local_time();
-				time_end = boost::posix_time::microsec_clock::local_time();
-				diff = time_end - time_start;
+				time_start = boost::posix_time::microsec_clock::local_time();	//Start the time variable to comare with
+				time_end = boost::posix_time::microsec_clock::local_time();		//Our first end value, will be compared to the start time
+				diff = time_end - time_start;									//Calculate the difference in time
 
-				while (diff.total_milliseconds() < WAIT_TIME) {			//Limit the data sending rate
-					boost::this_thread::sleep(boost::posix_time::milliseconds(10));	//Wait for connection
+				while (diff.total_milliseconds() < WAIT_TIME) {	//Limit the data sending rate, default is around 100-120 messages per second
+					boost::this_thread::sleep(boost::posix_time::milliseconds(1));	//Wait for connection
 					time_end = boost::posix_time::microsec_clock::local_time();
 					diff = time_end - time_start;
 				}
 
-				Button_array = new char[10];
-				DPad_array = new char[4];
+				Button_array = new char[10];					//Initialise a new array for our buttons
+				DPad_array = new char[4];						//Initialise a new array for our dpad buttons
+
+				///Check our buttons if they are being pressed,if they are being pressed we set a 1 in our button array///
+				///Button array => { start, back, left thumb button, right thumb button, left bumper, right bumper, a, b, x, y }///
+				///Dpad array => { up, down, left, right }///
 
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_START)) Button_array[0] = '1';
 				else Button_array[0] = '0';
@@ -735,6 +749,8 @@ int main(int argc, char *argv[]) {
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_DPAD_RIGHT)) DPad_array[3] = '1';
 				else DPad_array[3] = '0';
 
+
+				///Create our json message that will be sent to NI Mate / websocket server///
 				json json_j;
 				std::string message;
 
@@ -751,80 +767,97 @@ int main(int argc, char *argv[]) {
 
 				message = json_j.dump();											//Dump the Json message to a string so it can be sent
 				endpoint.send(id, message);											//Send the message / data to the server
-				if (debug_send) std::cout << message << std::endl;									//In case we need to debug the message that is sent
-				///Cleanup before next iteration, avoid memory leaks///
+				if (debug_send) std::cout << message << std::endl;					//In case we need to debug the message that is sent
+
+				///Cleanup before next iteration, just in case, avoid memory leaks///
 				message.clear();
 				json_j.clear();
-
 				delete[] Button_array;
 				delete[] DPad_array;
 			}
-			else if (poll_data == 0) {
-				boost::this_thread::sleep(boost::posix_time::milliseconds(10));	//Wait for connection
+			else if (!poll_param) {
+				boost::this_thread::sleep(boost::posix_time::milliseconds(10));		//Limit the polling rate slightly
+
+				/* 
+					The following if / else statements work as follows:
+					- Check if the button is being pressed
+					- If it is being pressed we check if it is being held down or not, send a message if it was not being held down previously and setting the "button_hold[button]" variable to 1
+					- Else we check if it was being pressed / held down before and if it was, we send a message that we are no longer holding the button down
+					- This is done for every button, every iteration
+				*/
+
 
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_START)) {
-					if (button_hold[0] == 0) {
+					if (button_hold[0] == 0) {									//Check that the button is not being held down already
+						button_array_nopoll[0] = 1;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "start";
-						json_j["value"]["user_1"]["pressed"] = "start";
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9]};
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
 						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
-						message.clear();
-						json_j.clear();
-						button_hold[0] = 1;
+						if (debug_send) std::cout << message << std::endl;		//Print out message, for debugging
+						endpoint.send(id, message);								//Send the message / data to NI Mate / websocket server
+						message.clear();										//Clear the message
+						json_j.clear();											//Clear our Json message
+						button_hold[0] = 1;										//Set button_hold variable to 1, to show that the button is being pressed
 					}
 				}
 				else {
 					if (button_hold[0] == 1) {
+						button_array_nopoll[0] = 0;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "start";
-						json_j["value"]["user_1"]["pressed"] = "end";
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
 						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
-						message.clear();
-						json_j.clear();
-						button_hold[0] = 0;
+						if (debug_send) std::cout << message << std::endl;		//Print out message, for debugging
+						endpoint.send(id, message);								//Send the message / data to NI Mate / websocket server
+						message.clear();										//Clear the message
+						json_j.clear();											//Clear our Json message
+						button_hold[0] = 0;										//Set button_hold variable to 0, to show that the button is no longer being pressed
 					}
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_BACK)) {
 					if (button_hold[1] == 0) {
-					json json_j;
-					std::string message;
-					json_j["type"] = "data";
-					json_j["value"]["device_id"] = device_id;
-					json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-					json_j["value"]["user_1"]["button"] = "back";
-					json_j["value"]["user_1"]["pressed"] = "start";
-					message = json_j.dump();								//Dump the Json message to a string so it can be sent
-					if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-					endpoint.send(id, message);								//Send the message / data to the server
-					message.clear();
-					json_j.clear();
-					button_hold[1] = 1;
-					}
-				}
-				else {
-					if (button_hold[1] == 1) {
+						button_array_nopoll[1] = 1;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "back";
-						json_j["value"]["user_1"]["pressed"] = "end";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
+						message.clear();
+						json_j.clear();
+						button_hold[1] = 1;
+					}
+				}
+				else {
+					if (button_hold[1] == 1) {
+						button_array_nopoll[1] = 0;
+						json json_j;
+						std::string message;
+						json_j["type"] = "data";
+						json_j["value"]["device_id"] = device_id;
+						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[1] = 0;
@@ -832,16 +865,18 @@ int main(int argc, char *argv[]) {
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_LEFT_THUMB)) {
 					if (button_hold[2] == 0) {
+						button_array_nopoll[2] = 1;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "ls";
-						json_j["value"]["user_1"]["pressed"] = "start";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[2] = 1;
@@ -849,16 +884,18 @@ int main(int argc, char *argv[]) {
 				}
 				else {
 					if (button_hold[2] == 1) {
+						button_array_nopoll[2] = 0;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "ls";
-						json_j["value"]["user_1"]["pressed"] = "end";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[2] = 0;
@@ -866,16 +903,18 @@ int main(int argc, char *argv[]) {
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_RIGHT_THUMB)) {
 					if (button_hold[3] == 0) {
+						button_array_nopoll[3] = 1;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "rs";
-						json_j["value"]["user_1"]["pressed"] = "start";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[3] = 1;
@@ -883,16 +922,18 @@ int main(int argc, char *argv[]) {
 				}
 				else {
 					if (button_hold[3] == 1) {
+						button_array_nopoll[3] = 0;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "rs";
-						json_j["value"]["user_1"]["pressed"] = "end";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[3] = 0;
@@ -900,16 +941,18 @@ int main(int argc, char *argv[]) {
 				}
 				if ( gamepad.IsPressed(XINPUT_GAMEPAD_LEFT_SHOULDER) ) {
 					if (button_hold[4] == 0) {
+						button_array_nopoll[4] = 1;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "lb";
-						json_j["value"]["user_1"]["pressed"] = "start";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[4] = 1;
@@ -917,16 +960,18 @@ int main(int argc, char *argv[]) {
 				}
 				else {
 					if (button_hold[4] == 1) {
+						button_array_nopoll[4] = 0;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "lb";
-						json_j["value"]["user_1"]["pressed"] = "end";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[4] = 0;
@@ -934,16 +979,18 @@ int main(int argc, char *argv[]) {
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_RIGHT_SHOULDER)) {
 					if (button_hold[5] == 0) {
+						button_array_nopoll[5] = 1;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "rb";
-						json_j["value"]["user_1"]["pressed"] = "start";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[5] = 1;
@@ -951,16 +998,18 @@ int main(int argc, char *argv[]) {
 				}
 				else {
 					if (button_hold[5] == 1) {
+						button_array_nopoll[5] = 0;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "rb";
-						json_j["value"]["user_1"]["pressed"] = "end";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[5] = 0;
@@ -968,16 +1017,18 @@ int main(int argc, char *argv[]) {
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_A)) {
 					if (button_hold[6] == 0) {
+						button_array_nopoll[6] = 1;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "a";
-						json_j["value"]["user_1"]["pressed"] = "start";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[6] = 1;
@@ -985,16 +1036,18 @@ int main(int argc, char *argv[]) {
 				}
 				else {
 					if (button_hold[6] == 1) {
+						button_array_nopoll[6] = 0;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "a";
-						json_j["value"]["user_1"]["pressed"] = "end";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[6] = 0;
@@ -1002,16 +1055,18 @@ int main(int argc, char *argv[]) {
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_B)) {
 					if (button_hold[7] == 0) {
+						button_array_nopoll[7] = 1;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "b";
-						json_j["value"]["user_1"]["pressed"] = "start";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[7] = 1;
@@ -1019,16 +1074,18 @@ int main(int argc, char *argv[]) {
 				}
 				else {
 					if (button_hold[7] == 1) {
+						button_array_nopoll[7] = 0;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "b";
-						json_j["value"]["user_1"]["pressed"] = "end";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[7] = 0;
@@ -1036,16 +1093,18 @@ int main(int argc, char *argv[]) {
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_X)) {
 					if (button_hold[8] == 0) {
+						button_array_nopoll[8] = 1;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "x";
-						json_j["value"]["user_1"]["pressed"] = "start";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[8] = 1;
@@ -1053,16 +1112,18 @@ int main(int argc, char *argv[]) {
 				}
 				else {
 					if (button_hold[8] == 1) {
+						button_array_nopoll[8] = 0;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "x";
-						json_j["value"]["user_1"]["pressed"] = "end";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[8] = 0;
@@ -1070,16 +1131,18 @@ int main(int argc, char *argv[]) {
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_Y)) {
 					if (button_hold[9] == 0) {
+						button_array_nopoll[9] = 1;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "y";
-						json_j["value"]["user_1"]["pressed"] = "start";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[9] = 1;
@@ -1087,16 +1150,18 @@ int main(int argc, char *argv[]) {
 				}
 				else {
 					if (button_hold[9] == 1) {
+						button_array_nopoll[9] = 0;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["button"] = "y";
-						json_j["value"]["user_1"]["pressed"] = "end";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						button_hold[9] = 0;
@@ -1104,16 +1169,18 @@ int main(int argc, char *argv[]) {
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_DPAD_UP)) {
 					if (dpad_hold[0] == 0) {
+						dpad_array_nopoll[0] = 1;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["dpad"] = "up";
-						json_j["value"]["user_1"]["pressed"] = "start";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						dpad_hold[0] = 1;
@@ -1121,16 +1188,18 @@ int main(int argc, char *argv[]) {
 				}
 				else {
 					if (dpad_hold[0] == 1) {
+						dpad_array_nopoll[0] = 0;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["dpad"] = "up";
-						json_j["value"]["user_1"]["pressed"] = "end";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						dpad_hold[0] = 0;
@@ -1138,16 +1207,18 @@ int main(int argc, char *argv[]) {
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_DPAD_DOWN)) {
 					if (dpad_hold[1] == 0) {
+						dpad_array_nopoll[1] = 1;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["dpad"] = "down";
-						json_j["value"]["user_1"]["pressed"] = "start";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						dpad_hold[1] = 1;
@@ -1155,16 +1226,18 @@ int main(int argc, char *argv[]) {
 				}
 				else {
 					if (dpad_hold[1] == 1) {
+						dpad_array_nopoll[1] = 0;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["dpad"] = "down";
-						json_j["value"]["user_1"]["pressed"] = "end";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						dpad_hold[1] = 0;
@@ -1172,16 +1245,18 @@ int main(int argc, char *argv[]) {
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_DPAD_LEFT)) {
 					if (dpad_hold[2] == 0) {
+						dpad_array_nopoll[2] = 1;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
-						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["dpad"] = "left";
-						json_j["value"]["user_1"]["pressed"] = "start";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["timestamp_ms"] = (time(0) * 1000); 
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						dpad_hold[2] = 1;
@@ -1189,16 +1264,18 @@ int main(int argc, char *argv[]) {
 				}
 				else {
 					if (dpad_hold[2] == 1) {
+						dpad_array_nopoll[2] = 0;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["dpad"] = "left";
-						json_j["value"]["user_1"]["pressed"] = "end";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						dpad_hold[2] = 0;
@@ -1206,16 +1283,18 @@ int main(int argc, char *argv[]) {
 				}
 				if (gamepad.IsPressed(XINPUT_GAMEPAD_DPAD_RIGHT)) {
 					if (dpad_hold[3] == 0) {
+						dpad_array_nopoll[3] = 1;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["dpad"] = "right";
-						json_j["value"]["user_1"]["pressed"] = "start";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						dpad_hold[3] = 1;
@@ -1223,77 +1302,97 @@ int main(int argc, char *argv[]) {
 				}
 				else {
 					if (dpad_hold[3] == 1) {
+						dpad_array_nopoll[3] = 0;
 						json json_j;
 						std::string message;
 						json_j["type"] = "data";
 						json_j["value"]["device_id"] = device_id;
 						json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-						json_j["value"]["user_1"]["dpad"] = "right";
-						json_j["value"]["user_1"]["pressed"] = "end";
-						message = json_j.dump();								//Dump the Json message to a string so it can be sent
-						if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-						endpoint.send(id, message);								//Send the message / data to the server
+						json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+							button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+						json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+						message = json_j.dump();
+						if (debug_send) std::cout << message << std::endl;
+						endpoint.send(id, message);
 						message.clear();
 						json_j.clear();
 						dpad_hold[3] = 0;
 					}
 				}
 
-				if ( (gamepad.leftStickX != old_val_LStickX) || (gamepad.leftStickY != old_val_LStickY) ) {
+				///Sticks and trigger have values that change, if there is a change in value we send a new message///
+				
+				/*
+					All following if statements have the basic idea
+				*/
+
+				if ( (gamepad.leftStickX != old_val_LStickX) || (gamepad.leftStickY != old_val_LStickY) ) {		//Check if our values have changed, send message with the new values if they have
 					json json_j;
 					std::string message;
 					json_j["type"] = "data";
 					json_j["value"]["device_id"] = device_id;
 					json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-					json_j["value"]["user_1"]["left stick"] = { gamepad.leftStickX, gamepad.leftStickY };
-					message = json_j.dump();								//Dump the Json message to a string so it can be sent
-					if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-					endpoint.send(id, message);								//Send the message / data to the server
-					message.clear();
-					json_j.clear();
-					old_val_LStickX = gamepad.leftStickX, old_val_LStickY = gamepad.leftStickY;
+					json_j["value"]["user_1"]["left stick"] = { gamepad.leftStickX, gamepad.leftStickY };		//Send both X and Y values at the same time, 
+					json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+						button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+					json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+					message = json_j.dump();
+					if (debug_send) std::cout << message << std::endl;											//Print the data in case we need to debug
+					endpoint.send(id, message);																	//Send our Json message
+					message.clear();																			//Clear our message
+					json_j.clear();																				//Clear our Json message
+					old_val_LStickX = gamepad.leftStickX, old_val_LStickY = gamepad.leftStickY;					//The new value becomes our old value
 				}
 
-				else if ( (gamepad.rightStickX != old_val_RStickX) || (gamepad.rightStickY != old_val_RStickY) ) {
+				if ( (gamepad.rightStickX != old_val_RStickX) || (gamepad.rightStickY != old_val_RStickY) ) {
 					json json_j;
 					std::string message;
 					json_j["type"] = "data";
 					json_j["value"]["device_id"] = device_id;
 					json_j["value"]["timestamp_ms"] = (time(0) * 1000);
-					json_j["value"]["user_1"]["left stick"] = { gamepad.rightStickX, gamepad.rightStickY };
-					message = json_j.dump();								//Dump the Json message to a string so it can be sent
-					if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-					endpoint.send(id, message);								//Send the message / data to the server
+					json_j["value"]["user_1"]["right stick"] = { gamepad.rightStickX, gamepad.rightStickY };
+					json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+						button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+					json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+					message = json_j.dump();
+					if (debug_send) std::cout << message << std::endl;
+					endpoint.send(id, message);
 					message.clear();
 					json_j.clear();
 					old_val_RStickX = gamepad.rightStickX, old_val_RStickY = gamepad.rightStickY;
 				}
 
-				else if (gamepad.leftTrigger != old_val_LT) {
+				if (gamepad.leftTrigger != old_val_LT) {
 					json json_j;
 					std::string message;
 					json_j["type"] = "data";
 					json_j["value"]["device_id"] = device_id;
 					json_j["value"]["timestamp_ms"] = (time(0) * 1000);
 					json_j["value"]["user_1"]["left trigger"] = gamepad.leftTrigger;
-					message = json_j.dump();								//Dump the Json message to a string so it can be sent
-					if (debug_send) std::cout << message << std::endl;						//Print out message, for debugging
-					endpoint.send(id, message);								//Send the message / data to the server
+					json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+						button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+					json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+					message = json_j.dump();
+					if (debug_send) std::cout << message << std::endl;
+					endpoint.send(id, message);
 					message.clear();
 					json_j.clear();
 					old_val_LT = gamepad.leftTrigger;
 				}
 
-				else if (gamepad.rightTrigger != old_val_RT) {
+				if (gamepad.rightTrigger != old_val_RT) {
 					json json_j;
 					std::string message;
 					json_j["type"] = "data";
 					json_j["value"]["device_id"] = device_id;
 					json_j["value"]["timestamp_ms"] = (time(0) * 1000);
 					json_j["value"]["user_1"]["right trigger"] = gamepad.rightTrigger;
-					message = json_j.dump();								//Dump the Json message to a string so it can be sent
-					if (debug_send) std::cout << message << std::endl;		//Print out message, for debugging
-					endpoint.send(id, message);								//Send the message / data to the server
+					json_j["value"]["user_1"]["buttons"] = { button_array_nopoll[0], button_array_nopoll[1], button_array_nopoll[2], button_array_nopoll[3],
+						button_array_nopoll[4], button_array_nopoll[5], button_array_nopoll[6], button_array_nopoll[7], button_array_nopoll[8], button_array_nopoll[9] };
+					json_j["value"]["user_1"]["dpad"] = { dpad_array_nopoll[0], dpad_array_nopoll[1], dpad_array_nopoll[2], dpad_array_nopoll[3] };
+					message = json_j.dump();
+					if (debug_send) std::cout << message << std::endl;
+					endpoint.send(id, message);
 					message.clear();
 					json_j.clear();
 					old_val_RT = gamepad.rightTrigger;
@@ -1307,6 +1406,10 @@ int main(int argc, char *argv[]) {
 			id = endpoint.connect(ip_address);								//Try to reconnect to the server, id will be old id + 1
 			boost::this_thread::sleep(boost::posix_time::seconds(2)); 		//Have to wait a couple of seconds to reconnect
 			endpoint.send(id, start_message);
+		}
+
+		while (pause) {
+			boost::this_thread::sleep(boost::posix_time::milliseconds(100)); 		//Pause the program and sleep
 		}
 
 		if (stop) {															//If we receive a stop command from the sever / NI Mate
