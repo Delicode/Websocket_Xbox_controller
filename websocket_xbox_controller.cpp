@@ -441,7 +441,6 @@ bool Gamepad::CheckConnection() {
 	}
 }
 
-// Returns false if the controller has been disconnected
 bool Gamepad::Refresh() {
 	if (cId == -1) {
 		CheckConnection();
@@ -1409,7 +1408,6 @@ int main(int argc, char *argv[]) {
 		}
 
 		while (pause) {
-			boost::this_thread::sleep(boost::posix_time::milliseconds(100)); 		//Pause the program and sleep
 		}
 
 		if (stop) {															//If we receive a stop command from the sever / NI Mate
