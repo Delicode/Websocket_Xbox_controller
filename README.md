@@ -30,6 +30,7 @@ After that we will install our libraries by following the installation instructi
 - [Boost](http://www.boost.org/doc/libs/1_61_0/more/getting_started/windows.html)
 - [Nlohmann Json](https://github.com/nlohmann/json), download project, place the json.hpp file into our project folder
 
+Finally to get the code to work, we need to link the libraries and then compile the code.
 
 ####Using the program
 - The program will first ask for the IP address and port number of the computer running NI Mate / the websocket server.
